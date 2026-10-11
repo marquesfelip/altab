@@ -1,0 +1,164 @@
+name: Release
+
+# Publica uma release quando uma tag "vX.Y.Z" é enviada.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write       # criar a release
+  id-token: write       # attestations (proveniência do build)
+  attestations: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      SIGNPATH_ORG: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          if ("${{ github.ref_type }}" -eq 'tag' -and $tag -ne $cargo) {
+            throw "Tag v$tag does not match Cargo.toml version $cargo"
+          }
+          "version=$cargo" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build
+        run: cargo build --release --locked
+
+      # --- Assinatura opcional via SignPath (ativa quando a variável SIGNPATH_ORGANIZATION_ID existe) ---
+      - name: Stage unsigned exe
+        if: env.SIGNPATH_ORG != ''
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force unsigned-exe | Out-Null
+          Copy-Item target/release/altab.exe unsigned-exe/altab.exe
+
+      - name: Upload unsigned exe
+        if: env.SIGNPATH_ORG != ''
+        id: upload-exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: unsigned-exe/altab.exe
+
+      - name: Sign exe (SignPath)
+        if: env.SIGNPATH_ORG != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: altab
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: exe
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-exe
+
+      - name: Use signed exe
+        if: env.SIGNPATH_ORG != ''
+        shell: pwsh
+        run: Copy-Item signed-exe/altab.exe target/release/altab.exe -Force
+
+      # --- Pacotes ---
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" installer\altab.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Stage unsigned installer
+        if: env.SIGNPATH_ORG != ''
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force unsigned-setup | Out-Null
+          Copy-Item dist/altab-setup.exe unsigned-setup/altab-setup.exe
+
+      - name: Upload unsigned installer
+        if: env.SIGNPATH_ORG != ''
+        id: upload-setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup
+          path: unsigned-setup/altab-setup.exe
+
+      - name: Sign installer (SignPath)
+        if: env.SIGNPATH_ORG != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: altab
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-setup
+
+      - name: Use signed installer
+        if: env.SIGNPATH_ORG != ''
+        shell: pwsh
+        run: Copy-Item signed-setup/altab-setup.exe dist/altab-setup.exe -Force
+
+      - name: Portable zip and checksums
+        shell: pwsh
+        run: |
+          $stage = "stage/altab"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item target/release/altab.exe, LICENSE, README.md, assets/fonts/Inter-LICENSE.txt $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath dist/altab-portable.zip -Force
+          Push-Location dist
+          Get-ChildItem altab-setup.exe, altab-portable.zip | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower(), $_.Name
+          } | Set-Content -Encoding ascii SHA256SUMS
+          Get-Content SHA256SUMS
+          Pop-Location
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/altab-setup.exe
+            dist/altab-portable.zip
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            dist/altab-setup.exe dist/altab-portable.zip dist/SHA256SUMS `
+            --title "altab ${{ github.ref_name }}" `
+            --generate-notes
+
+  winget:
+    # Abre o PR de atualização em microsoft/winget-pkgs. Requer o secret WINGET_TOKEN
+    # (PAT com escopo public_repo) e que o pacote já exista no winget-pkgs.
+    needs: release
+    if: github.ref_type == 'tag'
+    runs-on: windows-latest
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - name: Publish to winget
+        if: env.WINGET_TOKEN != ''
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: marquesfelip.altab
+          installers-regex: 'altab-setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
