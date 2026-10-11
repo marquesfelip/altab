@@ -29,7 +29,7 @@
 
 Pick one. All of them install per user (no administrator prompt) and make altab start with Windows.
 
-**winget**
+**winget** (available as soon as the [package request](https://github.com/microsoft/winget-pkgs/pull/450379) is approved)
 
 ```powershell
 winget install marquesfelip.altab

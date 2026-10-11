@@ -29,7 +29,7 @@
 
 Escolha uma opção. Todas instalam por usuário (sem pedir administrador) e configuram o altab para iniciar com o Windows.
 
-**winget**
+**winget** (disponível assim que o [pedido do pacote](https://github.com/microsoft/winget-pkgs/pull/450379) for aprovado)
 
 ```powershell
 winget install marquesfelip.altab
