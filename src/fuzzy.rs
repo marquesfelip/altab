@@ -68,8 +68,8 @@ pub fn rank(query: &str, apps: &[AppEntry]) -> Vec<Match> {
         scored.push((score, Match { app, window, name_hits }));
     }
 
-    // `sort_by` é estável: empates mantêm a ordem de uso recente.
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    // `sort_by_key` é estável: empates mantêm a ordem de uso recente.
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
     scored.into_iter().map(|(_, m)| m).collect()
 }
 

@@ -102,6 +102,8 @@ pub fn show_menu(hwnd: HWND) -> Option<Command> {
 }
 
 /// Ícone do app, embutido no .exe (recurso de ID 1, ver `build.rs`) no tamanho pedido.
+// MAKEINTRESOURCE: o ID do recurso viaja no próprio valor do ponteiro.
+#[allow(clippy::manual_dangling_ptr)]
 pub fn app_icon(size: i32) -> HICON {
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else {
