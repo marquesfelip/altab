@@ -8,6 +8,7 @@ use windows::core::w;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 
+use crate::hotkey::{self, Hotkey};
 use crate::i18n::{self, Lang};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,8 @@ pub struct Settings {
     pub lang: Lang,
     /// Iniciar junto com o Windows (padrão: ligado).
     pub autostart: bool,
+    /// Atalho que abre o seletor (padrão: Alt+Tab).
+    pub hotkey: Hotkey,
 }
 
 thread_local! {
@@ -66,6 +69,7 @@ fn load() -> Settings {
         theme: Theme::System,
         lang: i18n::detect_system(),
         autostart: true,
+        hotkey: hotkey::DEFAULT,
     };
     let Some(text) = config_path().and_then(|p| std::fs::read_to_string(p).ok()) else {
         return s;
@@ -78,6 +82,11 @@ fn load() -> Settings {
             ("theme", "system") => s.theme = Theme::System,
             ("theme", "light") => s.theme = Theme::Light,
             ("theme", "dark") => s.theme = Theme::Dark,
+            ("hotkey", text) => {
+                if let Some(h) = Hotkey::parse(text).filter(|h| h.validate().is_ok()) {
+                    s.hotkey = h;
+                }
+            }
             ("autostart", "true") => s.autostart = true,
             ("autostart", "false") => s.autostart = false,
             ("language", code) => {
@@ -97,7 +106,7 @@ fn save(s: &Settings) {
         let _ = std::fs::create_dir_all(dir);
     }
     let body = format!(
-        "mode={}\ntheme={}\nlanguage={}\nautostart={}\n",
+        "mode={}\ntheme={}\nlanguage={}\nautostart={}\nhotkey={}\n",
         match s.mode {
             Mode::Windows => "windows",
             Mode::Fixed => "fixed",
@@ -108,7 +117,8 @@ fn save(s: &Settings) {
             Theme::Dark => "dark",
         },
         s.lang.code(),
-        s.autostart
+        s.autostart,
+        s.hotkey.to_config()
     );
     let _ = std::fs::write(path, body);
 }

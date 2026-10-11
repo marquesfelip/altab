@@ -4,6 +4,7 @@ mod gfx;
 mod autostart;
 mod fuzzy;
 mod hook;
+mod hotkey;
 mod i18n;
 mod options;
 mod render;
@@ -41,11 +42,13 @@ fn main() {
         if hook::install(hwnd).is_err() {
             return;
         }
+        hook::set_hotkey(settings::get().hotkey);
+        hook::accept_injected(std::env::args().any(|a| a == "--accept-injected"));
         tray::add(hwnd);
 
         // Mantém a entrada de início automático em sincronia com a opção (e com o
         // caminho atual do exe). Execuções de depuração não mexem no registro.
-        let debug = std::env::args().any(|a| matches!(a.as_str(), "--show" | "--options" | "--query"));
+        let debug = std::env::args().any(|a| matches!(a.as_str(), "--show" | "--options" | "--query" | "--accept-injected"));
         if !debug {
             autostart::set(settings::get().autostart);
         }

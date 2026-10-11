@@ -21,6 +21,7 @@
 - **Pesquisa fuzzy** – digite `chr` para *Google Chrome*, `vsc` para *Visual Studio Code*, `opcoes` para *Opções*
   (ignora maiúsculas e acentos; busca em nomes de apps e títulos de janelas; destaca as letras encontradas).
 - **Preview ao vivo** da janela selecionada (miniaturas do DWM).
+- **Atalho personalizado** – mantenha o Alt+Tab ou grave sua própria combinação (ex.: `Ctrl+Espaço`) nas Opções.
 - **Dois comportamentos** – *Padrão Windows* (soltar o Alt troca de janela) ou *Fixo* (fica aberto até Enter/Esc/clique).
 - **Ícone na bandeja** com Opções e Sair; interface em português (Brasil) e inglês, conforme o idioma do Windows.
 - **Inicia com o Windows**, sem precisar de administrador. Leve (~1,5 MB), escrito em Rust, sem telemetria.
@@ -69,14 +70,15 @@ ou use *Configurações → Aplicativos*, ou:
 
 | Tecla | Ação |
 | --- | --- |
-| `Alt` + `Tab` | Abre o seletor / próximo app |
+| `Alt` + `Tab` (configurável) | Abre o seletor / próximo app |
 | `Shift` + `Alt` + `Tab`, `↑` `←` | App anterior |
 | `Tab`, `↓` `→`, roda do mouse | Próximo app |
 | *digitar texto* | Pesquisa fuzzy (mantém o painel aberto) |
 | `Enter` / clique | Troca para a janela selecionada |
 | `Esc` / clique fora | Cancela |
 
-Clique no ícone da bandeja para abrir as **Opções**: comportamento do Alt+Tab, tema, iniciar com o Windows e idioma.
+Clique no ícone da bandeja para abrir as **Opções**: comportamento do Alt+Tab, atalho, tema, iniciar com o Windows e idioma.
+Para trocar o atalho, clique na linha *Atalho do seletor* e pressione a nova combinação (precisa de `Alt` ou `Ctrl`).
 As configurações ficam em `%APPDATA%\altab\config.ini`:
 
 ```ini
@@ -84,6 +86,7 @@ mode=windows     # windows | fixed
 theme=system     # system | light | dark
 language=pt-BR   # en-US | pt-BR
 autostart=true   # true | false
+hotkey=alt+tab   # ex.: ctrl+space, alt+grave, ctrl+alt+k
 ```
 
 **Limitação conhecida:** com uma janela executando como administrador em foco, o Windows não entrega as teclas ao
@@ -122,7 +125,7 @@ O instalador é gerado com o [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 ISCC.exe /DAppVersion=0.1.0 installer\altab.iss   # dist\altab-setup.exe
 ```
 
-Flags de depuração: `altab.exe --show` (abre o seletor), `--options` (abre as Opções), `--query <texto>` (preenche a pesquisa).
+Flags de depuração: `altab.exe --show` (abre o seletor), `--options` (abre as Opções), `--query <texto>` (preenche a pesquisa), `--accept-injected` (processa teclas sintéticas, para testes automatizados).
 
 ## Créditos e licenças
 

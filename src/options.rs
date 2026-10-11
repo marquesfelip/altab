@@ -12,7 +12,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::autostart;
-use crate::gfx::{Align, Target};
+use crate::gfx::{Align, Rgba, Target};
+use crate::hook;
+use crate::hotkey::{self, Hotkey, Invalid};
 use crate::i18n::{self, Label, Lang};
 use crate::render;
 use crate::settings::{self, Mode, Theme};
@@ -26,6 +28,7 @@ const MARGIN: f32 = 20.0;
 const TOP: f32 = 14.0;
 const HEADER_H: f32 = 34.0;
 const ROW_H: f32 = 46.0;
+const NOTE_H: f32 = 30.0;
 const GROUP_GAP: f32 = 8.0;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -34,13 +37,26 @@ enum Action {
     Theme(Theme),
     Lang(Lang),
     ToggleAutostart,
+    RecordHotkey,
+    ResetHotkey,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Header,
+    Row,
+    Note,
 }
 
 struct Item {
-    text: &'static str,
-    /// `None` = cabeçalho de grupo.
+    text: String,
+    kind: Kind,
     action: Option<Action>,
+    /// Mostra a marca de seleção (✓).
     selected: bool,
+    /// Texto à direita da linha (ex.: o atalho atual).
+    value: Option<String>,
+    value_accent: bool,
     last_in_group: bool,
     rect: RECT,
 }
@@ -52,10 +68,18 @@ struct Layout {
     height: i32,
 }
 
+/// Estado transitório da interface.
+#[derive(Clone, Copy, Default)]
+struct Ui {
+    recording: bool,
+    error: Option<Label>,
+}
+
 struct State {
     main: HWND,
     scale: f32,
     focus: usize,
+    ui: Ui,
     target: Option<Target>,
 }
 
@@ -68,7 +92,18 @@ fn px(scale: f32, v: f32) -> i32 {
     (v * scale).round() as i32
 }
 
-fn layout(scale: f32) -> Layout {
+struct Row {
+    text: String,
+    action: Action,
+    selected: bool,
+    value: Option<(String, bool)>,
+}
+
+fn row(label: Label, action: Action, selected: bool) -> Row {
+    Row { text: i18n::t(label).to_string(), action, selected, value: None }
+}
+
+fn layout(scale: f32, ui: Ui) -> Layout {
     let st = settings::get();
     let mut items = Vec::new();
     let mut cards = Vec::new();
@@ -76,11 +111,14 @@ fn layout(scale: f32) -> Layout {
     let left = px(scale, MARGIN);
     let right = px(scale, CLIENT_W - MARGIN);
 
-    let mut group = |title: Label, rows: Vec<(Label, Action, bool)>| {
+    let mut group = |title: Label, rows: Vec<Row>, note: Option<Label>| {
         items.push(Item {
-            text: i18n::t(title),
+            text: i18n::t(title).to_string(),
+            kind: Kind::Header,
             action: None,
             selected: false,
+            value: None,
+            value_accent: false,
             last_in_group: false,
             rect: RECT {
                 left: left + px(scale, 12.0),
@@ -92,45 +130,89 @@ fn layout(scale: f32) -> Layout {
         y += HEADER_H;
         let card_top = px(scale, y);
         let n = rows.len();
-        for (i, (label, action, selected)) in rows.into_iter().enumerate() {
+        for (i, r) in rows.into_iter().enumerate() {
+            let (value, value_accent) = match r.value {
+                Some((v, a)) => (Some(v), a),
+                None => (None, false),
+            };
             items.push(Item {
-                text: i18n::t(label),
-                action: Some(action),
-                selected,
+                text: r.text,
+                kind: Kind::Row,
+                action: Some(r.action),
+                selected: r.selected,
+                value,
+                value_accent,
                 last_in_group: i + 1 == n,
                 rect: RECT { left, top: px(scale, y), right, bottom: px(scale, y + ROW_H) },
             });
             y += ROW_H;
         }
         cards.push(RECT { left, top: card_top, right, bottom: px(scale, y) });
+        if let Some(label) = note {
+            items.push(Item {
+                text: i18n::t(label).to_string(),
+                kind: Kind::Note,
+                action: None,
+                selected: false,
+                value: None,
+                value_accent: false,
+                last_in_group: false,
+                rect: RECT {
+                    left: left + px(scale, 12.0),
+                    top: px(scale, y),
+                    right,
+                    bottom: px(scale, y + NOTE_H),
+                },
+            });
+            y += NOTE_H;
+        }
         y += GROUP_GAP;
     };
 
     group(
         Label::ModeTitle,
         vec![
-            (Label::ModeWindows, Action::Mode(Mode::Windows), st.mode == Mode::Windows),
-            (Label::ModeFixed, Action::Mode(Mode::Fixed), st.mode == Mode::Fixed),
+            row(Label::ModeWindows, Action::Mode(Mode::Windows), st.mode == Mode::Windows),
+            row(Label::ModeFixed, Action::Mode(Mode::Fixed), st.mode == Mode::Fixed),
         ],
+        None,
     );
+
+    let hk_value = if ui.recording {
+        (i18n::t(Label::HotkeyRecording).to_string(), true)
+    } else {
+        (st.hotkey.display(st.lang), false)
+    };
+    let mut hk_row = row(Label::HotkeyRow, Action::RecordHotkey, false);
+    hk_row.value = Some(hk_value);
+    let note = ui.error;
+    group(
+        Label::HotkeyTitle,
+        vec![hk_row, row(Label::HotkeyReset, Action::ResetHotkey, false)],
+        note,
+    );
+
     group(
         Label::ThemeTitle,
         vec![
-            (Label::ThemeSystem, Action::Theme(Theme::System), st.theme == Theme::System),
-            (Label::ThemeLight, Action::Theme(Theme::Light), st.theme == Theme::Light),
-            (Label::ThemeDark, Action::Theme(Theme::Dark), st.theme == Theme::Dark),
+            row(Label::ThemeSystem, Action::Theme(Theme::System), st.theme == Theme::System),
+            row(Label::ThemeLight, Action::Theme(Theme::Light), st.theme == Theme::Light),
+            row(Label::ThemeDark, Action::Theme(Theme::Dark), st.theme == Theme::Dark),
         ],
+        None,
     );
     group(
         Label::StartupTitle,
-        vec![(Label::StartupLogin, Action::ToggleAutostart, st.autostart)],
+        vec![row(Label::StartupLogin, Action::ToggleAutostart, st.autostart)],
+        None,
     );
     group(
         Label::LanguageTitle,
         vec![
-            (Label::LangPt, Action::Lang(Lang::PtBr), st.lang == Lang::PtBr),
-            (Label::LangEn, Action::Lang(Lang::EnUs), st.lang == Lang::EnUs),
+            row(Label::LangPt, Action::Lang(Lang::PtBr), st.lang == Lang::PtBr),
+            row(Label::LangEn, Action::Lang(Lang::EnUs), st.lang == Lang::EnUs),
         ],
+        None,
     );
     Layout { items, cards, height: px(scale, y + MARGIN - GROUP_GAP) }
 }
@@ -163,19 +245,17 @@ pub fn show(main: HWND) {
 
         let scale = GetDpiForSystem() as f32 / 96.0;
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        let mut r = RECT {
-            left: 0,
-            top: 0,
-            right: px(scale, CLIENT_W),
-            bottom: layout(scale).height,
-        };
+        // Reserva a altura do caso mais alto (com a nota de erro visível).
+        let tall = layout(scale, Ui { recording: false, error: Some(Label::HotkeyReserved) });
+        let mut r = RECT { left: 0, top: 0, right: px(scale, CLIENT_W), bottom: tall.height };
         let _ = AdjustWindowRectEx(&mut r, style, false, WINDOW_EX_STYLE(0));
         let (w, h) = (r.right - r.left, r.bottom - r.top);
         let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
         let y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
         STATE.with(|st| {
-            *st.borrow_mut() = Some(State { main, scale, focus: 0, target: None });
+            *st.borrow_mut() =
+                Some(State { main, scale, focus: 0, ui: Ui::default(), target: None });
         });
         let title = to_wide(i18n::t(Label::OptionsTitle));
         let Ok(hwnd) = CreateWindowExW(
@@ -206,28 +286,108 @@ fn style_frame(hwnd: HWND) {
     let dark = settings::effective_dark();
     render::apply_frame(hwnd, dark, None);
     let p = render::palette();
-    let bgr = |c: crate::gfx::Rgba| c.0 as u32 | (c.1 as u32) << 8 | (c.2 as u32) << 16;
+    let bgr = |c: Rgba| c.0 as u32 | (c.1 as u32) << 8 | (c.2 as u32) << 16;
     render::apply_caption(hwnd, bgr(p.opt_bg), bgr(p.text));
 }
 
-fn apply(hwnd: HWND, action: Action) {
-    settings::update(|st| match action {
-        Action::Mode(m) => st.mode = m,
-        Action::Theme(t) => st.theme = t,
-        Action::Lang(l) => st.lang = l,
-        Action::ToggleAutostart => st.autostart = !st.autostart,
+fn notify_main() {
+    if let Some(main) = STATE.with(|st| st.borrow().as_ref().map(|s| s.main)) {
+        unsafe {
+            let _ = PostMessageW(Some(main), WM_SETTINGS_CHANGED, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+fn set_ui(f: impl FnOnce(&mut Ui)) {
+    STATE.with(|st| {
+        if let Some(s) = st.borrow_mut().as_mut() {
+            f(&mut s.ui);
+        }
     });
-    if action == Action::ToggleAutostart {
-        autostart::set(settings::get().autostart);
+}
+
+fn stop_recording(hwnd: HWND) {
+    hook::stop_recording();
+    set_ui(|u| u.recording = false);
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+fn apply(hwnd: HWND, action: Action) {
+    match action {
+        Action::RecordHotkey => {
+            // Clicar de novo na linha cancela a gravação.
+            let recording = STATE
+                .with(|st| st.borrow().as_ref().map(|s| s.ui.recording))
+                .unwrap_or(false);
+            if recording {
+                stop_recording(hwnd);
+            } else {
+                set_ui(|u| {
+                    u.recording = true;
+                    u.error = None;
+                });
+                hook::start_recording(hwnd);
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+            }
+            return;
+        }
+        Action::ResetHotkey => {
+            settings::update(|st| st.hotkey = hotkey::DEFAULT);
+            hook::set_hotkey(hotkey::DEFAULT);
+            set_ui(|u| u.error = None);
+        }
+        _ => {
+            settings::update(|st| match action {
+                Action::Mode(m) => st.mode = m,
+                Action::Theme(t) => st.theme = t,
+                Action::Lang(l) => st.lang = l,
+                Action::ToggleAutostart => st.autostart = !st.autostart,
+                Action::RecordHotkey | Action::ResetHotkey => {}
+            });
+            if action == Action::ToggleAutostart {
+                autostart::set(settings::get().autostart);
+            }
+        }
     }
     unsafe {
         let title = to_wide(i18n::t(Label::OptionsTitle));
         let _ = SetWindowTextW(hwnd, PCWSTR(title.as_ptr()));
         style_frame(hwnd);
         let _ = InvalidateRect(Some(hwnd), None, false);
-        if let Some(main) = STATE.with(|st| st.borrow().as_ref().map(|s| s.main)) {
-            let _ = PostMessageW(Some(main), WM_SETTINGS_CHANGED, WPARAM(0), LPARAM(0));
+    }
+    notify_main();
+}
+
+/// Resultado da gravação: valida e aplica (ou mostra o erro).
+fn hotkey_recorded(hwnd: HWND, vk: u16, mods: u32) {
+    set_ui(|u| u.recording = false);
+    if vk == hotkey::VK_ESCAPE && mods == 0 {
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
         }
+        return;
+    }
+    let hk = Hotkey { alt: mods & 1 != 0, ctrl: mods & 2 != 0, shift: mods & 4 != 0, vk };
+    match hk.validate() {
+        Ok(()) => {
+            settings::update(|st| st.hotkey = hk);
+            hook::set_hotkey(hk);
+            set_ui(|u| u.error = None);
+            notify_main();
+        }
+        Err(e) => set_ui(|u| {
+            u.error = Some(match e {
+                Invalid::NeedsModifier => Label::HotkeyNeedsModifier,
+                Invalid::Reserved => Label::HotkeyReserved,
+            })
+        }),
+    }
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
     }
 }
 
@@ -248,12 +408,12 @@ unsafe fn paint(hwnd: HWND) {
         if st.target.is_none() {
             st.target = Target::new(hwnd, w, h);
         }
-        let (scale, focus, has_focus) = (st.scale, st.focus, GetFocus() == hwnd);
+        let (scale, focus, ui, has_focus) = (st.scale, st.focus, st.ui, GetFocus() == hwnd);
         let Some(t) = st.target.as_mut() else { return };
         t.resize(w, h);
 
         let p = render::palette();
-        let lay = layout(scale);
+        let lay = layout(scale, ui);
         let radios = radio_indices(&lay.items);
         t.begin(p.opt_bg);
 
@@ -262,10 +422,17 @@ unsafe fn paint(hwnd: HWND) {
         }
         for (n, it) in lay.items.iter().enumerate() {
             let r = it.rect;
-            let Some(_) = it.action else {
-                t.text(it.text, r, 12.5 * scale, 600, Align::Left, p.muted);
-                continue;
-            };
+            match it.kind {
+                Kind::Header => {
+                    t.text(&it.text, r, 12.5 * scale, 600, Align::Left, p.muted);
+                    continue;
+                }
+                Kind::Note => {
+                    t.text(&it.text, r, 12.5 * scale, 400, Align::Left, (230, 80, 70, 255));
+                    continue;
+                }
+                Kind::Row => {}
+            }
             if has_focus && radios.get(focus) == Some(&n) {
                 let inset = px(scale, 4.0);
                 let hr = RECT {
@@ -276,9 +443,16 @@ unsafe fn paint(hwnd: HWND) {
                 };
                 t.rrect(hr, 7.0 * scale, p.opt_hover);
             }
-            let tr = RECT { left: r.left + px(scale, 16.0), right: r.right - px(scale, 44.0), ..r };
-            t.text(it.text, tr, 14.0 * scale, 400, Align::Left, p.text);
+            let text_right = r.right - px(scale, if it.value.is_some() { 16.0 } else { 44.0 });
+            let tr = RECT { left: r.left + px(scale, 16.0), right: text_right, ..r };
+            t.text(&it.text, tr, 14.0 * scale, 400, Align::Left, p.text);
 
+            if let Some(v) = &it.value {
+                // Valor à direita (o atalho atual ou "Pressione as teclas...").
+                let vr = RECT { left: r.left + px(scale, 200.0), right: text_right, ..r };
+                let color = if it.value_accent { p.accent } else { p.muted };
+                t.text(v, vr, 14.0 * scale, if it.value_accent { 600 } else { 500 }, Align::Right, color);
+            }
             if it.selected {
                 // Marca de seleção (✓) azul.
                 let cx = r.right as f32 - 26.0 * scale;
@@ -306,8 +480,15 @@ unsafe fn paint(hwnd: HWND) {
     let _ = EndPaint(hwnd, &ps);
 }
 
-fn activate_at(hwnd: HWND, list_index: usize, scale: f32) {
-    let lay = layout(scale);
+fn current_ui() -> (f32, Ui) {
+    STATE
+        .with(|st| st.borrow().as_ref().map(|s| (s.scale, s.ui)))
+        .unwrap_or((1.0, Ui::default()))
+}
+
+fn activate_at(hwnd: HWND, list_index: usize) {
+    let (scale, ui) = current_ui();
+    let lay = layout(scale, ui);
     if let Some(Some(a)) = lay.items.get(list_index).map(|i| i.action) {
         apply(hwnd, a);
     }
@@ -320,12 +501,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        hook::WM_HOTKEY_RECORDED => {
+            hotkey_recorded(hwnd, wp.0 as u16, lp.0 as u32);
+            LRESULT(0)
+        }
         WM_LBUTTONDOWN => {
             let (x, y) = ((lp.0 & 0xFFFF) as i16 as i32, ((lp.0 >> 16) & 0xFFFF) as i16 as i32);
-            let Some(scale) = STATE.with(|st| st.borrow().as_ref().map(|s| s.scale)) else {
-                return LRESULT(0);
-            };
-            let lay = layout(scale);
+            let (scale, ui) = current_ui();
+            let lay = layout(scale, ui);
             let radios = radio_indices(&lay.items);
             let hit = lay.items.iter().position(|i| {
                 i.action.is_some()
@@ -334,23 +517,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     && y >= i.rect.top
                     && y < i.rect.bottom
             });
-            if let Some(n) = hit {
-                if let Some(f) = radios.iter().position(|&r| r == n) {
-                    STATE.with(|st| {
-                        if let Some(s) = st.borrow_mut().as_mut() {
-                            s.focus = f;
-                        }
-                    });
+            match hit {
+                Some(n) => {
+                    if let Some(f) = radios.iter().position(|&r| r == n) {
+                        STATE.with(|st| {
+                            if let Some(s) = st.borrow_mut().as_mut() {
+                                s.focus = f;
+                            }
+                        });
+                    }
+                    let _ = SetFocus(Some(hwnd));
+                    activate_at(hwnd, n);
                 }
-                let _ = SetFocus(Some(hwnd));
-                activate_at(hwnd, n, scale);
+                None => {
+                    if ui.recording {
+                        stop_recording(hwnd);
+                    }
+                }
             }
             LRESULT(0)
         }
         WM_KEYDOWN => {
             let vk = VIRTUAL_KEY(wp.0 as u16);
-            let scale = STATE.with(|st| st.borrow().as_ref().map(|s| s.scale)).unwrap_or(1.0);
-            let radios = radio_indices(&layout(scale).items);
+            let (scale, ui) = current_ui();
+            let radios = radio_indices(&layout(scale, ui).items);
             match vk {
                 VK_ESCAPE => {
                     let _ = DestroyWindow(hwnd);
@@ -368,18 +558,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 VK_RETURN | VK_SPACE => {
                     let f = STATE.with(|st| st.borrow().as_ref().map(|s| s.focus)).unwrap_or(0);
                     if let Some(&n) = radios.get(f) {
-                        activate_at(hwnd, n, scale);
+                        activate_at(hwnd, n);
                     }
                 }
                 _ => {}
             }
             LRESULT(0)
         }
-        WM_SETFOCUS | WM_KILLFOCUS => {
+        WM_KILLFOCUS => {
+            // Perder o foco cancela uma gravação em andamento.
+            if current_ui().1.recording {
+                stop_recording(hwnd);
+            }
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
+        }
+        WM_SETFOCUS => {
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_DESTROY => {
+            hook::stop_recording();
             HWND_OPT.with(|c| c.set(0));
             STATE.with(|st| *st.borrow_mut() = None);
             LRESULT(0)

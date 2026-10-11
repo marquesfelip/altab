@@ -379,7 +379,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             with_app(|a| a.hide());
             LRESULT(0)
         }
-        hook::WM_ALT_UP => {
+        hook::WM_MOD_UP => {
             with_app(|a| {
                 if !a.sticky && a.thumb_or_open() {
                     a.activate_selected();

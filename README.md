@@ -21,6 +21,7 @@
 - **Fuzzy search** – type `chr` for *Google Chrome*, `vsc` for *Visual Studio Code*, `opcoes` for *Opções*
   (case- and accent-insensitive; matches app names and window titles; matched letters are highlighted).
 - **Live previews** of the selected window (DWM thumbnails).
+- **Custom shortcut** – keep Alt+Tab or record your own combination (e.g. `Ctrl+Space`) in Options.
 - **Two behaviours** – *Windows default* (release Alt to switch) or *Fixed* (stays open until Enter/Esc/click).
 - **Tray icon** with Options and Exit, English and Brazilian Portuguese UI (follows your Windows language).
 - **Starts with Windows**, no admin rights needed. Small (~1.5 MB), written in Rust, no telemetry.
@@ -69,14 +70,15 @@ or use *Settings → Apps*, or:
 
 | Key | Action |
 | --- | --- |
-| `Alt` + `Tab` | Open the switcher / next app |
+| `Alt` + `Tab` (configurable) | Open the switcher / next app |
 | `Shift` + `Alt` + `Tab`, `↑` `←` | Previous app |
 | `Tab`, `↓` `→`, mouse wheel | Next app |
 | *type text* | Fuzzy search (keeps the panel open) |
 | `Enter` / click | Switch to the selected window |
 | `Esc` / click outside | Cancel |
 
-Right-click (or click) the tray icon for **Options**: Alt+Tab behaviour, theme, start with Windows and language.
+Click the tray icon for **Options**: Alt+Tab behaviour, shortcut, theme, start with Windows and language.
+To change the shortcut, click the *Switcher shortcut* row and press the new combination (it needs `Alt` or `Ctrl`).
 Settings are stored in `%APPDATA%\altab\config.ini`:
 
 ```ini
@@ -84,6 +86,7 @@ mode=windows     # windows | fixed
 theme=system     # system | light | dark
 language=en-US   # en-US | pt-BR
 autostart=true   # true | false
+hotkey=alt+tab   # e.g. ctrl+space, alt+grave, ctrl+alt+k
 ```
 
 **Known limitation:** when a window running as administrator is focused, Windows does not deliver
@@ -122,7 +125,7 @@ The installer is built with [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 ISCC.exe /DAppVersion=0.1.0 installer\altab.iss   # dist\altab-setup.exe
 ```
 
-Debug flags: `altab.exe --show` (open the switcher), `--options` (open Options), `--query <text>` (prefill the search).
+Debug flags: `altab.exe --show` (open the switcher), `--options` (open Options), `--query <text>` (prefill the search), `--accept-injected` (process synthetic key events, for automated tests).
 
 ## Releasing (maintainers)
 
