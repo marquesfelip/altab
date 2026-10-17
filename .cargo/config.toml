@@ -1,0 +1,5 @@
+# Liga o runtime do C/C++ (VC++ CRT) estaticamente. Sem isso o altab.exe depende de
+# VCRUNTIME140.dll, ausente em Windows recém-instalados (e no validador do winget),
+# e o programa nem abre (STATUS_DLL_NOT_FOUND, 0xC0000135).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
